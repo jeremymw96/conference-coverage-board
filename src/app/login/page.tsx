@@ -4,23 +4,19 @@ import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function send(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
     setBusy(true);
     const sb = supabaseBrowser();
-    const site = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
-    const { error } = await sb.auth.signInWithOtp({
-      email: email.trim(),
-      options: { emailRedirectTo: `${site}/auth/callback` },
-    });
+    const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password });
     setBusy(false);
-    if (error) setErr(error.message);
-    else setSent(true);
+    if (error) { setErr(error.message); return; }
+    window.location.href = "/console";
   }
 
   return (
@@ -40,35 +36,23 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {sent ? (
-          <p style={{ color: "var(--ink-2)", fontSize: 14, lineHeight: 1.6 }}>
-            Check your email — we sent a sign-in link to <b>{email}</b>. Open it on this device to
-            enter the console.
+        <form onSubmit={submit}>
+          <div className="field">
+            <label>Email</label>
+            <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@ufhealth.org" autoComplete="username" />
+          </div>
+          <div className="field">
+            <label>Password</label>
+            <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoComplete="current-password" />
+          </div>
+          {err && <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 10 }}>{err}</div>}
+          <button className="btn primary" disabled={busy} style={{ width: "100%" }}>
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+          <p style={{ color: "var(--ink-3)", fontSize: 12, marginTop: 12 }}>
+            Chiefs only. Residents don&rsquo;t sign in — they use the request form. Locked out? Ask another chief to reset your password in Supabase.
           </p>
-        ) : (
-          <form onSubmit={send}>
-            <div className="field">
-              <label>Your UF Health email</label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@ufhealth.org"
-              />
-            </div>
-            {err && (
-              <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 10 }}>{err}</div>
-            )}
-            <button className="btn primary" disabled={busy} style={{ width: "100%" }}>
-              {busy ? "Sending…" : "Email me a sign-in link"}
-            </button>
-            <p style={{ color: "var(--ink-3)", fontSize: 12, marginTop: 12 }}>
-              Only the chiefs&rsquo; addresses can enter. Residents don&rsquo;t sign in — they use the
-              request form.
-            </p>
-          </form>
-        )}
+        </form>
       </div>
     </div>
   );
