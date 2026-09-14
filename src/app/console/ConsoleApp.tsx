@@ -94,6 +94,11 @@ export default function ConsoleApp({
     await refresh();
   }
 
+  async function remove(id: string) {
+    await fetch(`/api/requests/${id}`, { method: "DELETE" });
+    await refresh();
+  }
+
   const pending = reqs.filter((r) => r.status === "pending");
   const overdue = reqs.filter(isOverdue);
 
@@ -177,6 +182,7 @@ export default function ConsoleApp({
               onDeny={(r) => decide(r.id, { action: "deny" })}
               onEdit={(r) => setEditReq(r)}
               onRevision={(r) => setRevisionReq(r)}
+              onDelete={(r) => remove(r.id)}
               highlight={highlight}
             />
           )}
@@ -236,6 +242,7 @@ function Board({
   onDeny,
   onEdit,
   onRevision,
+  onDelete,
   highlight,
 }: {
   reqs: RequestRow[];
@@ -245,6 +252,7 @@ function Board({
   onDeny: (r: RequestRow) => void;
   onEdit: (r: RequestRow) => void;
   onRevision: (r: RequestRow) => void;
+  onDelete: (r: RequestRow) => void;
   highlight: string | null;
 }) {
   const counts = {
@@ -335,6 +343,7 @@ function Board({
               onDeny={onDeny}
               onEdit={onEdit}
               onRevision={onRevision}
+              onDelete={onDelete}
               flash={highlight === r.id}
             />
           ))
@@ -354,6 +363,7 @@ function Card({
   onDeny,
   onEdit,
   onRevision,
+  onDelete,
   flash,
 }: {
   r: RequestRow;
@@ -361,11 +371,13 @@ function Card({
   onDeny: (r: RequestRow) => void;
   onEdit: (r: RequestRow) => void;
   onRevision: (r: RequestRow) => void;
+  onDelete: (r: RequestRow) => void;
   flash: boolean;
 }) {
   const presTxt = r.presentation_dates.length ? r.presentation_dates.map(fmtISO).join(", ") : null;
   const comments = Array.isArray(r.chief_comments) ? r.chief_comments : [];
   const decidable = r.status === "pending" || r.status === "needs_revision";
+  const [confirmDel, setConfirmDel] = useState(false);
 
   let leftInfo: JSX.Element | null = null;
   if (r.status === "pending") {
@@ -475,6 +487,24 @@ function Card({
             <button className="btn sm" onClick={() => onEdit(r)}>
               Edit
             </button>
+            {confirmDel ? (
+              <>
+                <button
+                  className="btn sm"
+                  style={{ background: "var(--danger)", borderColor: "var(--danger)", color: "#fff" }}
+                  onClick={() => onDelete(r)}
+                >
+                  Confirm delete
+                </button>
+                <button className="btn sm" onClick={() => setConfirmDel(false)}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button className="btn ghost-danger sm" onClick={() => setConfirmDel(true)}>
+                Delete
+              </button>
+            )}
           </span>
         </div>
       </div>

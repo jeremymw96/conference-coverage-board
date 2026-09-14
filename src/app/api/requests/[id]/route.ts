@@ -130,3 +130,13 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   return NextResponse.json({ error: "unknown action" }, { status: 400 });
 }
+
+// Chief-only: permanently delete a request card (e.g. a test/sample entry).
+export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
+  const chief = await getChief();
+  if (!chief) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const sb = supabaseAdmin();
+  const { error } = await sb.from("requests").delete().eq("id", params.id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
