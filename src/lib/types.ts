@@ -1,4 +1,4 @@
-export type Status = "pending" | "approved" | "denied";
+export type Status = "pending" | "approved" | "denied" | "needs_revision";
 
 export type Resident = {
   id: string;
@@ -7,6 +7,13 @@ export type Resident = {
   pgy: number;
   clinic_cohort: string | null;
   active: boolean;
+};
+
+// A chief-to-chief note attached to a request (e.g. why a revision is needed).
+export type ChiefComment = {
+  author: string;
+  text: string;
+  at: string; // ISO timestamp
 };
 
 export type RequestRow = {
@@ -20,6 +27,7 @@ export type RequestRow = {
   is_core: boolean;
   presentation_dates: string[];
   status: Status;
+  chief_comments: ChiefComment[];
   coverage_needed: boolean | null;
   cover_resident_id: string | null;
   cover_resident_name: string | null;
