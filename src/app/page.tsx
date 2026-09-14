@@ -11,6 +11,7 @@ type Meta = {
   blocks: Block[];
   today: string;
 };
+type ChiefComment = { author: string; text: string; at: string };
 type MyReq = {
   id: string;
   conference: string;
@@ -19,6 +20,8 @@ type MyReq = {
   rotation: string | null;
   status: string;
   presentation_dates: string[];
+  note?: string;
+  chief_comments?: ChiefComment[];
 };
 
 export default function ResidentForm() {
@@ -179,22 +182,9 @@ export default function ResidentForm() {
           <div className="card formcard">
             <div className="field">
               <label>
-                Your name <span className="hint">— start typing to search</span>
+                Your name <span className="hint">— start typing your first or last name</span>
               </label>
-              <input
-                list="reslist"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Type your last name…"
-                autoComplete="off"
-              />
-              <datalist id="reslist">
-                {meta?.residents.map((r) => (
-                  <option key={r.id} value={r.full_name}>
-                    PGY-{r.pgy}
-                  </option>
-                ))}
-              </datalist>
+              <NameSearch residents={meta?.residents || []} value={name} onChange={setName} />
             </div>
 
             <div className="field">
@@ -307,7 +297,7 @@ export default function ResidentForm() {
                   <span>
                     No problem — programs often don&rsquo;t release the exact slot until weeks after
                     acceptance. The chiefs will see this flagged for follow-up, and you can add the
-                    date later.
+                    date later from &ldquo;Your requests&rdquo; below.
                   </span>
                 </div>
               )}
@@ -404,21 +394,14 @@ export default function ResidentForm() {
             <div className="card">
               {mine.length ? (
                 mine.map((r) => (
-                  <div className="myrow" key={r.id}>
-                    <div>
-                      <div className="conf">{r.conference}</div>
-                      <div className="dt">
-                        {fmtRange(new Date(r.start_date + "T00:00:00"), new Date(r.end_date + "T00:00:00"))} ·{" "}
-                        {r.rotation || "—"}
-                      </div>
-                    </div>
-                    <div className="sp" style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      {r.status !== "denied" && r.presentation_dates.length === 0 && (
-                        <span className="chip flag">⚑ add date</span>
-                      )}
-                      <StatusChip status={r.status} />
-                    </div>
-                  </div>
+                  <MyRequestRow
+                    key={r.id}
+                    r={r}
+                    residentId={residentId}
+                    meta={meta}
+                    reload={() => loadMine(residentId)}
+                    flash={flash}
+                  />
                 ))
               ) : (
                 <div className="empty">
@@ -442,9 +425,290 @@ export default function ResidentForm() {
   );
 }
 
+/* ───────── Searchable name field (first OR last name) ───────── */
+function NameSearch({
+  residents,
+  value,
+  onChange,
+}: {
+  residents: { id: string; full_name: string; pgy: number }[];
+  value: string;
+  onChange: (name: string) => void;
+}) {
+  const [q, setQ] = useState(value);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+
+  useEffect(() => {
+    setQ(value);
+  }, [value]);
+
+  const matches = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return residents.slice(0, 8);
+    const toks = s.split(/\s+/);
+    return residents
+      .filter((r) => {
+        const hay = r.full_name.toLowerCase();
+        const words = hay.split(/\s+/);
+        return toks.every((t) => words.some((w) => w.startsWith(t)) || hay.includes(t));
+      })
+      .slice(0, 8);
+  }, [q, residents]);
+
+  function choose(r: { full_name: string }) {
+    onChange(r.full_name);
+    setQ(r.full_name);
+    setOpen(false);
+  }
+
+  return (
+    <div className="ac-wrap">
+      <input
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value);
+          onChange(e.target.value);
+          setOpen(true);
+          setActive(0);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onKeyDown={(e) => {
+          if (!open) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setActive((a) => Math.min(a + 1, matches.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActive((a) => Math.max(a - 1, 0));
+          } else if (e.key === "Enter") {
+            if (matches[active]) {
+              e.preventDefault();
+              choose(matches[active]);
+            }
+          } else if (e.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+        placeholder="Type your first or last name…"
+        autoComplete="off"
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
+      />
+      {open && (
+        <div className="ac-menu">
+          {matches.length ? (
+            matches.map((r, i) => (
+              <button
+                type="button"
+                key={r.id}
+                className={"ac-opt" + (i === active ? " active" : "")}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => choose(r)}
+              >
+                <span>{r.full_name}</span>
+                <span className="ac-pgy">PGY-{r.pgy}</span>
+              </button>
+            ))
+          ) : (
+            <div className="ac-empty">No matches — check the spelling.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ───────── A resident's own request, with self-edit ───────── */
+function MyRequestRow({
+  r,
+  residentId,
+  meta,
+  reload,
+  flash,
+}: {
+  r: MyReq;
+  residentId: string | null;
+  meta: Meta | null;
+  reload: () => void;
+  flash: (msg: string, warn?: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [conference, setConference] = useState(r.conference);
+  const [startDate, setStartDate] = useState(r.start_date);
+  const [endDate, setEndDate] = useState(r.end_date);
+  const [rotation, setRotation] = useState(r.rotation || "");
+  const [note, setNote] = useState(r.note || "");
+  const [pres, setPres] = useState<string[]>(r.presentation_dates.length ? r.presentation_dates : []);
+  const [busy, setBusy] = useState(false);
+
+  const editable = r.status === "pending" || r.status === "needs_revision";
+  const comments = r.chief_comments || [];
+
+  function reset() {
+    setConference(r.conference);
+    setStartDate(r.start_date);
+    setEndDate(r.end_date);
+    setRotation(r.rotation || "");
+    setNote(r.note || "");
+    setPres(r.presentation_dates.length ? r.presentation_dates : []);
+  }
+
+  async function save() {
+    if (!residentId) return;
+    if (editable) {
+      if (!conference.trim()) return flash("Conference can't be blank.", true);
+      if (!startDate || !endDate) return flash("Both dates are required.", true);
+      if (endDate < startDate) return flash("Return date is before departure.", true);
+    }
+    const body: Record<string, unknown> = {
+      resident_id: residentId,
+      id: r.id,
+      presentation_dates: pres.filter(Boolean).sort(),
+    };
+    if (editable) {
+      body.conference = conference.trim();
+      body.start_date = startDate;
+      body.end_date = endDate;
+      body.rotation = rotation || null;
+      body.note = note.trim();
+    }
+    setBusy(true);
+    const res = await fetch("/api/my-requests", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await res.json();
+    setBusy(false);
+    if (!res.ok) return flash(d.error || "Couldn't save.", true);
+    setOpen(false);
+    flash(r.status === "needs_revision" ? "Updated — sent back to the chiefs for review." : "Your request was updated.");
+    reload();
+  }
+
+  return (
+    <div className="myrow expandable">
+      <div>
+        <div className="conf">{r.conference}</div>
+        <div className="dt">
+          {fmtRange(new Date(r.start_date + "T00:00:00"), new Date(r.end_date + "T00:00:00"))} ·{" "}
+          {r.rotation || "—"}
+        </div>
+      </div>
+      <div className="sp" style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: "auto" }}>
+        {r.status !== "denied" && r.presentation_dates.length === 0 && (
+          <span className="chip flag">⚑ add date</span>
+        )}
+        <StatusChip status={r.status} />
+        <button
+          className="btn sm"
+          onClick={() => {
+            if (!open) reset();
+            setOpen(!open);
+          }}
+        >
+          {open ? "Close" : "Manage"}
+        </button>
+      </div>
+
+      {open && (
+        <div className="myedit">
+          {r.status === "needs_revision" && comments.length > 0 && (
+            <div className="revision-note">
+              <div className="rn-label">The chiefs asked for a revision</div>
+              {comments.map((c, i) => (
+                <div className="rn-item" key={i}>
+                  {c.text} <span className="rn-who">— {c.author}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="field" style={{ margin: 0 }}>
+            <label>Presentation date(s)</label>
+            {pres.length === 0 && <div className="hint" style={{ marginBottom: 7 }}>Add your exact date once you know it.</div>}
+            {pres.map((d, i) => (
+              <div className="presrow" key={i}>
+                <input
+                  type="date"
+                  value={d}
+                  onChange={(e) => {
+                    const v = [...pres];
+                    v[i] = e.target.value;
+                    setPres(v);
+                  }}
+                />
+                <button type="button" className="rm" onClick={() => setPres(pres.filter((_, j) => j !== i))}>
+                  ✕
+                </button>
+              </div>
+            ))}
+            <button type="button" className="btn sm" onClick={() => setPres([...pres, ""])}>
+              + Add a date
+            </button>
+          </div>
+
+          {editable ? (
+            <>
+              <div className="field" style={{ margin: 0 }}>
+                <label>Conference</label>
+                <input value={conference} onChange={(e) => setConference(e.target.value)} />
+              </div>
+              <div className="field2">
+                <div className="field" style={{ margin: 0 }}>
+                  <label>Departure</label>
+                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                </div>
+                <div className="field" style={{ margin: 0 }}>
+                  <label>Return</label>
+                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+                </div>
+              </div>
+              <div className="field" style={{ margin: 0 }}>
+                <label>Rotation</label>
+                <select value={rotation} onChange={(e) => setRotation(e.target.value)}>
+                  <option value="">— select —</option>
+                  {meta?.vocab.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                      {isCoreLabel(l) ? " (core)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field" style={{ margin: 0 }}>
+                <label>Anything the chiefs should know?</label>
+                <textarea value={note} onChange={(e) => setNote(e.target.value)} />
+              </div>
+            </>
+          ) : (
+            <div className="hint">
+              This request is {r.status === "approved" ? "approved" : "denied"}, so only the presentation
+              date can be changed here. Ask the chiefs if anything else needs to change.
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="btn primary" onClick={save} disabled={busy}>
+              {busy ? "Saving…" : "Save changes"}
+            </button>
+            <button className="btn" onClick={() => setOpen(false)} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatusChip({ status }: { status: string }) {
   if (status === "pending") return <span className="chip pending">◷ Pending</span>;
   if (status === "approved") return <span className="chip approved">✓ Approved</span>;
+  if (status === "needs_revision") return <span className="chip flag">⚑ Needs revision</span>;
   return <span className="chip denied">✕ Denied</span>;
 }
 
