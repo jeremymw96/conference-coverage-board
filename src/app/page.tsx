@@ -11,7 +11,6 @@ type Meta = {
   blocks: Block[];
   today: string;
 };
-type ChiefComment = { author: string; text: string; at: string };
 type MyReq = {
   id: string;
   conference: string;
@@ -20,8 +19,6 @@ type MyReq = {
   rotation: string | null;
   status: string;
   presentation_dates: string[];
-  note?: string;
-  chief_comments?: ChiefComment[];
 };
 
 export default function ResidentForm() {
@@ -398,7 +395,6 @@ export default function ResidentForm() {
                     key={r.id}
                     r={r}
                     residentId={residentId}
-                    meta={meta}
                     reload={() => loadMine(residentId)}
                     flash={flash}
                   />
@@ -521,71 +517,44 @@ function NameSearch({
   );
 }
 
-/* ───────── A resident's own request, with self-edit ───────── */
+/* ───────── A resident's own request — presentation date is the only self-edit ───────── */
 function MyRequestRow({
   r,
   residentId,
-  meta,
   reload,
   flash,
 }: {
   r: MyReq;
   residentId: string | null;
-  meta: Meta | null;
   reload: () => void;
   flash: (msg: string, warn?: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [conference, setConference] = useState(r.conference);
-  const [startDate, setStartDate] = useState(r.start_date);
-  const [endDate, setEndDate] = useState(r.end_date);
-  const [rotation, setRotation] = useState(r.rotation || "");
-  const [note, setNote] = useState(r.note || "");
   const [pres, setPres] = useState<string[]>(r.presentation_dates.length ? r.presentation_dates : []);
   const [busy, setBusy] = useState(false);
-
-  const editable = r.status === "pending" || r.status === "needs_revision";
-  const comments = r.chief_comments || [];
+  const locked = r.status === "denied";
 
   function reset() {
-    setConference(r.conference);
-    setStartDate(r.start_date);
-    setEndDate(r.end_date);
-    setRotation(r.rotation || "");
-    setNote(r.note || "");
     setPres(r.presentation_dates.length ? r.presentation_dates : []);
   }
 
   async function save() {
     if (!residentId) return;
-    if (editable) {
-      if (!conference.trim()) return flash("Conference can't be blank.", true);
-      if (!startDate || !endDate) return flash("Both dates are required.", true);
-      if (endDate < startDate) return flash("Return date is before departure.", true);
-    }
-    const body: Record<string, unknown> = {
-      resident_id: residentId,
-      id: r.id,
-      presentation_dates: pres.filter(Boolean).sort(),
-    };
-    if (editable) {
-      body.conference = conference.trim();
-      body.start_date = startDate;
-      body.end_date = endDate;
-      body.rotation = rotation || null;
-      body.note = note.trim();
-    }
     setBusy(true);
     const res = await fetch("/api/my-requests", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        resident_id: residentId,
+        id: r.id,
+        presentation_dates: pres.filter(Boolean).sort(),
+      }),
     });
     const d = await res.json();
     setBusy(false);
     if (!res.ok) return flash(d.error || "Couldn't save.", true);
     setOpen(false);
-    flash(r.status === "needs_revision" ? "Updated — sent back to the chiefs for review." : "Your request was updated.");
+    flash("Presentation date saved.");
     reload();
   }
 
@@ -599,37 +568,29 @@ function MyRequestRow({
         </div>
       </div>
       <div className="sp" style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: "auto" }}>
-        {r.status !== "denied" && r.presentation_dates.length === 0 && (
-          <span className="chip flag">⚑ add date</span>
-        )}
+        {r.presentation_dates.length === 0 && !locked && <span className="chip flag">⚑ add date</span>}
         <StatusChip status={r.status} />
-        <button
-          className="btn sm"
-          onClick={() => {
-            if (!open) reset();
-            setOpen(!open);
-          }}
-        >
-          {open ? "Close" : "Manage"}
-        </button>
+        {!locked && (
+          <button
+            className="btn sm"
+            onClick={() => {
+              if (!open) reset();
+              setOpen(!open);
+            }}
+          >
+            {open ? "Close" : r.presentation_dates.length ? "Edit date" : "Add date"}
+          </button>
+        )}
       </div>
 
-      {open && (
+      {open && !locked && (
         <div className="myedit">
-          {r.status === "needs_revision" && comments.length > 0 && (
-            <div className="revision-note">
-              <div className="rn-label">The chiefs asked for a revision</div>
-              {comments.map((c, i) => (
-                <div className="rn-item" key={i}>
-                  {c.text} <span className="rn-who">— {c.author}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
           <div className="field" style={{ margin: 0 }}>
             <label>Presentation date(s)</label>
-            {pres.length === 0 && <div className="hint" style={{ marginBottom: 7 }}>Add your exact date once you know it.</div>}
+            <div className="hint" style={{ marginBottom: 7 }}>
+              Add your exact date(s) once your program releases them. This is the only thing you can
+              change here — for any other change, contact the chiefs.
+            </div>
             {pres.map((d, i) => (
               <div className="presrow" key={i}>
                 <input
@@ -650,50 +611,9 @@ function MyRequestRow({
               + Add a date
             </button>
           </div>
-
-          {editable ? (
-            <>
-              <div className="field" style={{ margin: 0 }}>
-                <label>Conference</label>
-                <input value={conference} onChange={(e) => setConference(e.target.value)} />
-              </div>
-              <div className="field2">
-                <div className="field" style={{ margin: 0 }}>
-                  <label>Departure</label>
-                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-                </div>
-                <div className="field" style={{ margin: 0 }}>
-                  <label>Return</label>
-                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-                </div>
-              </div>
-              <div className="field" style={{ margin: 0 }}>
-                <label>Rotation</label>
-                <select value={rotation} onChange={(e) => setRotation(e.target.value)}>
-                  <option value="">— select —</option>
-                  {meta?.vocab.map((l) => (
-                    <option key={l} value={l}>
-                      {l}
-                      {isCoreLabel(l) ? " (core)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="field" style={{ margin: 0 }}>
-                <label>Anything the chiefs should know?</label>
-                <textarea value={note} onChange={(e) => setNote(e.target.value)} />
-              </div>
-            </>
-          ) : (
-            <div className="hint">
-              This request is {r.status === "approved" ? "approved" : "denied"}, so only the presentation
-              date can be changed here. Ask the chiefs if anything else needs to change.
-            </div>
-          )}
-
           <div style={{ display: "flex", gap: 10 }}>
             <button className="btn primary" onClick={save} disabled={busy}>
-              {busy ? "Saving…" : "Save changes"}
+              {busy ? "Saving…" : "Save"}
             </button>
             <button className="btn" onClick={() => setOpen(false)} disabled={busy}>
               Cancel
@@ -705,11 +625,12 @@ function MyRequestRow({
   );
 }
 
+// Residents only ever see pending / approved / denied. "needs_revision" is a chiefs-only
+// coordination state, so to a resident it simply reads as still pending (under review).
 function StatusChip({ status }: { status: string }) {
-  if (status === "pending") return <span className="chip pending">◷ Pending</span>;
   if (status === "approved") return <span className="chip approved">✓ Approved</span>;
-  if (status === "needs_revision") return <span className="chip flag">⚑ Needs revision</span>;
-  return <span className="chip denied">✕ Denied</span>;
+  if (status === "denied") return <span className="chip denied">✕ Denied</span>;
+  return <span className="chip pending">◷ Pending</span>;
 }
 
 function RangeCalendar({
