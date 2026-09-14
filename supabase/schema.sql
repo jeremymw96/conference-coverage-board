@@ -43,7 +43,8 @@ create table if not exists requests (
   rotation            text,
   is_core             boolean default false,
   presentation_dates  date[] not null default '{}',
-  status              text not null default 'pending' check (status in ('pending','approved','denied')),
+  status              text not null default 'pending' check (status in ('pending','approved','denied','needs_revision')),
+  chief_comments      jsonb not null default '[]',   -- chief-to-chief thread: [{author,text,at}]
   coverage_needed     boolean,
   cover_resident_id   uuid references residents(id) on delete set null,
   cover_resident_name text,

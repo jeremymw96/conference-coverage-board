@@ -179,22 +179,9 @@ export default function ResidentForm() {
           <div className="card formcard">
             <div className="field">
               <label>
-                Your name <span className="hint">— start typing to search</span>
+                Your name <span className="hint">— start typing your first or last name</span>
               </label>
-              <input
-                list="reslist"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Type your last name…"
-                autoComplete="off"
-              />
-              <datalist id="reslist">
-                {meta?.residents.map((r) => (
-                  <option key={r.id} value={r.full_name}>
-                    PGY-{r.pgy}
-                  </option>
-                ))}
-              </datalist>
+              <NameSearch residents={meta?.residents || []} value={name} onChange={setName} />
             </div>
 
             <div className="field">
@@ -307,7 +294,7 @@ export default function ResidentForm() {
                   <span>
                     No problem — programs often don&rsquo;t release the exact slot until weeks after
                     acceptance. The chiefs will see this flagged for follow-up, and you can add the
-                    date later.
+                    date later from &ldquo;Your requests&rdquo; below.
                   </span>
                 </div>
               )}
@@ -404,21 +391,13 @@ export default function ResidentForm() {
             <div className="card">
               {mine.length ? (
                 mine.map((r) => (
-                  <div className="myrow" key={r.id}>
-                    <div>
-                      <div className="conf">{r.conference}</div>
-                      <div className="dt">
-                        {fmtRange(new Date(r.start_date + "T00:00:00"), new Date(r.end_date + "T00:00:00"))} ·{" "}
-                        {r.rotation || "—"}
-                      </div>
-                    </div>
-                    <div className="sp" style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      {r.status !== "denied" && r.presentation_dates.length === 0 && (
-                        <span className="chip flag">⚑ add date</span>
-                      )}
-                      <StatusChip status={r.status} />
-                    </div>
-                  </div>
+                  <MyRequestRow
+                    key={r.id}
+                    r={r}
+                    residentId={residentId}
+                    reload={() => loadMine(residentId)}
+                    flash={flash}
+                  />
                 ))
               ) : (
                 <div className="empty">
@@ -442,10 +421,216 @@ export default function ResidentForm() {
   );
 }
 
+/* ───────── Searchable name field (first OR last name) ───────── */
+function NameSearch({
+  residents,
+  value,
+  onChange,
+}: {
+  residents: { id: string; full_name: string; pgy: number }[];
+  value: string;
+  onChange: (name: string) => void;
+}) {
+  const [q, setQ] = useState(value);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+
+  useEffect(() => {
+    setQ(value);
+  }, [value]);
+
+  const matches = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return residents.slice(0, 8);
+    const toks = s.split(/\s+/);
+    return residents
+      .filter((r) => {
+        const hay = r.full_name.toLowerCase();
+        const words = hay.split(/\s+/);
+        return toks.every((t) => words.some((w) => w.startsWith(t)) || hay.includes(t));
+      })
+      .slice(0, 8);
+  }, [q, residents]);
+
+  function choose(r: { full_name: string }) {
+    onChange(r.full_name);
+    setQ(r.full_name);
+    setOpen(false);
+  }
+
+  return (
+    <div className="ac-wrap">
+      <input
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value);
+          onChange(e.target.value);
+          setOpen(true);
+          setActive(0);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onKeyDown={(e) => {
+          if (!open) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setActive((a) => Math.min(a + 1, matches.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActive((a) => Math.max(a - 1, 0));
+          } else if (e.key === "Enter") {
+            if (matches[active]) {
+              e.preventDefault();
+              choose(matches[active]);
+            }
+          } else if (e.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+        placeholder="Type your first or last name…"
+        autoComplete="off"
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
+      />
+      {open && (
+        <div className="ac-menu">
+          {matches.length ? (
+            matches.map((r, i) => (
+              <button
+                type="button"
+                key={r.id}
+                className={"ac-opt" + (i === active ? " active" : "")}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => choose(r)}
+              >
+                <span>{r.full_name}</span>
+                <span className="ac-pgy">PGY-{r.pgy}</span>
+              </button>
+            ))
+          ) : (
+            <div className="ac-empty">No matches — check the spelling.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ───────── A resident's own request — presentation date is the only self-edit ───────── */
+function MyRequestRow({
+  r,
+  residentId,
+  reload,
+  flash,
+}: {
+  r: MyReq;
+  residentId: string | null;
+  reload: () => void;
+  flash: (msg: string, warn?: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pres, setPres] = useState<string[]>(r.presentation_dates.length ? r.presentation_dates : []);
+  const [busy, setBusy] = useState(false);
+  const locked = r.status === "denied";
+
+  function reset() {
+    setPres(r.presentation_dates.length ? r.presentation_dates : []);
+  }
+
+  async function save() {
+    if (!residentId) return;
+    setBusy(true);
+    const res = await fetch("/api/my-requests", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        resident_id: residentId,
+        id: r.id,
+        presentation_dates: pres.filter(Boolean).sort(),
+      }),
+    });
+    const d = await res.json();
+    setBusy(false);
+    if (!res.ok) return flash(d.error || "Couldn't save.", true);
+    setOpen(false);
+    flash("Presentation date saved.");
+    reload();
+  }
+
+  return (
+    <div className="myrow expandable">
+      <div>
+        <div className="conf">{r.conference}</div>
+        <div className="dt">
+          {fmtRange(new Date(r.start_date + "T00:00:00"), new Date(r.end_date + "T00:00:00"))} ·{" "}
+          {r.rotation || "—"}
+        </div>
+      </div>
+      <div className="sp" style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: "auto" }}>
+        {r.presentation_dates.length === 0 && !locked && <span className="chip flag">⚑ add date</span>}
+        <StatusChip status={r.status} />
+        {!locked && (
+          <button
+            className="btn sm"
+            onClick={() => {
+              if (!open) reset();
+              setOpen(!open);
+            }}
+          >
+            {open ? "Close" : r.presentation_dates.length ? "Edit date" : "Add date"}
+          </button>
+        )}
+      </div>
+
+      {open && !locked && (
+        <div className="myedit">
+          <div className="field" style={{ margin: 0 }}>
+            <label>Presentation date(s)</label>
+            <div className="hint" style={{ marginBottom: 7 }}>
+              Add your exact date(s) once your program releases them. This is the only thing you can
+              change here — for any other change, contact the chiefs.
+            </div>
+            {pres.map((d, i) => (
+              <div className="presrow" key={i}>
+                <input
+                  type="date"
+                  value={d}
+                  onChange={(e) => {
+                    const v = [...pres];
+                    v[i] = e.target.value;
+                    setPres(v);
+                  }}
+                />
+                <button type="button" className="rm" onClick={() => setPres(pres.filter((_, j) => j !== i))}>
+                  ✕
+                </button>
+              </div>
+            ))}
+            <button type="button" className="btn sm" onClick={() => setPres([...pres, ""])}>
+              + Add a date
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="btn primary" onClick={save} disabled={busy}>
+              {busy ? "Saving…" : "Save"}
+            </button>
+            <button className="btn" onClick={() => setOpen(false)} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Residents only ever see pending / approved / denied. "needs_revision" is a chiefs-only
+// coordination state, so to a resident it simply reads as still pending (under review).
 function StatusChip({ status }: { status: string }) {
-  if (status === "pending") return <span className="chip pending">◷ Pending</span>;
   if (status === "approved") return <span className="chip approved">✓ Approved</span>;
-  return <span className="chip denied">✕ Denied</span>;
+  if (status === "denied") return <span className="chip denied">✕ Denied</span>;
+  return <span className="chip pending">◷ Pending</span>;
 }
 
 function RangeCalendar({
