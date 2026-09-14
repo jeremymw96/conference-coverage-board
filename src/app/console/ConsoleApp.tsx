@@ -36,7 +36,13 @@ function Avatar({ name }: { name: string }) {
 function StatusChip({ s }: { s: string }) {
   if (s === "pending") return <span className="chip pending">◷ Pending</span>;
   if (s === "approved") return <span className="chip approved">✓ Approved</span>;
+  if (s === "needs_revision") return <span className="chip flag">⚑ Needs revision</span>;
   return <span className="chip denied">✕ Denied</span>;
+}
+function fmtWhen(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+    ", " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 function CoreChip({ rot }: { rot: string | null }) {
   return isCoreLabel(rot || "") ? (
@@ -47,6 +53,7 @@ function CoreChip({ rot }: { rot: string | null }) {
 }
 
 type Tab = "board" | "calendar" | "conferences" | "residents" | "admin";
+type Filter = "pending" | "approved" | "denied" | "needs_revision" | "all";
 
 /* ───────────────────────── main ───────────────────────── */
 export default function ConsoleApp({
@@ -61,8 +68,10 @@ export default function ConsoleApp({
   const [reqs, setReqs] = useState<RequestRow[]>(initialRequests);
   const [residents, setResidents] = useState<Resident[]>(initialResidents);
   const [tab, setTab] = useState<Tab>("board");
-  const [filter, setFilter] = useState<"pending" | "approved" | "denied" | "all">("pending");
+  const [filter, setFilter] = useState<Filter>("pending");
   const [modalReq, setModalReq] = useState<RequestRow | null>(null);
+  const [editReq, setEditReq] = useState<RequestRow | null>(null);
+  const [revisionReq, setRevisionReq] = useState<RequestRow | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
   const today = new Date();
   const [cal, setCal] = useState({ m: today.getMonth(), y: today.getFullYear() });
@@ -166,6 +175,8 @@ export default function ConsoleApp({
               setFilter={setFilter}
               onApprove={(r) => setModalReq(r)}
               onDeny={(r) => decide(r.id, { action: "deny" })}
+              onEdit={(r) => setEditReq(r)}
+              onRevision={(r) => setRevisionReq(r)}
               highlight={highlight}
             />
           )}
@@ -190,6 +201,28 @@ export default function ConsoleApp({
           }}
         />
       )}
+
+      {editReq && (
+        <EditModal
+          req={editReq}
+          onClose={() => setEditReq(null)}
+          onDone={async (body) => {
+            await decide(editReq.id, body);
+            setEditReq(null);
+          }}
+        />
+      )}
+
+      {revisionReq && (
+        <RevisionModal
+          req={revisionReq}
+          onClose={() => setRevisionReq(null)}
+          onDone={async (body) => {
+            await decide(revisionReq.id, body);
+            setRevisionReq(null);
+          }}
+        />
+      )}
     </>
   );
 }
@@ -201,19 +234,24 @@ function Board({
   setFilter,
   onApprove,
   onDeny,
+  onEdit,
+  onRevision,
   highlight,
 }: {
   reqs: RequestRow[];
-  filter: "pending" | "approved" | "denied" | "all";
-  setFilter: (f: "pending" | "approved" | "denied" | "all") => void;
+  filter: Filter;
+  setFilter: (f: Filter) => void;
   onApprove: (r: RequestRow) => void;
   onDeny: (r: RequestRow) => void;
+  onEdit: (r: RequestRow) => void;
+  onRevision: (r: RequestRow) => void;
   highlight: string | null;
 }) {
   const counts = {
     pending: reqs.filter((r) => r.status === "pending").length,
     approved: reqs.filter((r) => r.status === "approved").length,
     denied: reqs.filter((r) => r.status === "denied").length,
+    needs_revision: reqs.filter((r) => r.status === "needs_revision").length,
   };
   const overdue = reqs.filter(isOverdue).length;
   const followups = reqs.filter((r) => r.status !== "denied" && r.presentation_dates.length === 0).length;
@@ -272,9 +310,15 @@ function Board({
 
       <div style={{ marginBottom: 18 }}>
         <div className="sectiontabs">
-          {(["pending", "approved", "denied", "all"] as const).map((f) => (
+          {([
+            ["pending", "Pending"],
+            ["needs_revision", "Needs revision"],
+            ["approved", "Approved"],
+            ["denied", "Denied"],
+            ["all", "All"],
+          ] as const).map(([f, label]) => (
             <button key={f} className={filter === f ? "on" : ""} onClick={() => setFilter(f)}>
-              {f[0].toUpperCase() + f.slice(1)}{" "}
+              {label}{" "}
               <span className="cnt">{f === "all" ? reqs.length : counts[f]}</span>
             </button>
           ))}
@@ -289,6 +333,8 @@ function Board({
               r={r}
               onApprove={onApprove}
               onDeny={onDeny}
+              onEdit={onEdit}
+              onRevision={onRevision}
               flash={highlight === r.id}
             />
           ))
@@ -306,14 +352,47 @@ function Card({
   r,
   onApprove,
   onDeny,
+  onEdit,
+  onRevision,
   flash,
 }: {
   r: RequestRow;
   onApprove: (r: RequestRow) => void;
   onDeny: (r: RequestRow) => void;
+  onEdit: (r: RequestRow) => void;
+  onRevision: (r: RequestRow) => void;
   flash: boolean;
 }) {
   const presTxt = r.presentation_dates.length ? r.presentation_dates.map(fmtISO).join(", ") : null;
+  const comments = Array.isArray(r.chief_comments) ? r.chief_comments : [];
+  const decidable = r.status === "pending" || r.status === "needs_revision";
+
+  let leftInfo: JSX.Element | null = null;
+  if (r.status === "pending") {
+    leftInfo = (
+      <span className={"pendage " + (isOverdue(r) ? "over" : "")}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 8v4l3 2" />
+          <circle cx="12" cy="12" r="9" />
+        </svg>
+        {isOverdue(r)
+          ? `Pending ${daysPending(r.submitted_at)} days · reminder emailed`
+          : `Pending ${daysPending(r.submitted_at)} day${daysPending(r.submitted_at) === 1 ? "" : "s"}`}
+      </span>
+    );
+  } else if (r.status === "needs_revision") {
+    leftInfo = <span className="rc-decided">⚑ Sent back — awaiting resident update</span>;
+  } else if (r.decided_by) {
+    leftInfo = (
+      <span className="rc-decided">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20 6 9 17l-5-5" />
+        </svg>
+        {r.status === "denied" ? "Denied" : "Approved"} by {r.decided_by}
+      </span>
+    );
+  }
+
   return (
     <div className={"card rcard s-" + r.status + (flash ? " flash" : "")} id={"req-" + r.id}>
       <div className="stripe" />
@@ -362,37 +441,42 @@ function Card({
           )}
         </div>
         {r.note && <div className="rc-note">{r.note}</div>}
-        {r.status === "pending" && (
-          <div className="rc-foot">
-            <span className={"pendage " + (isOverdue(r) ? "over" : "")}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 8v4l3 2" />
-                <circle cx="12" cy="12" r="9" />
-              </svg>
-              {isOverdue(r)
-                ? `Pending ${daysPending(r.submitted_at)} days · reminder emailed`
-                : `Pending ${daysPending(r.submitted_at)} day${daysPending(r.submitted_at) === 1 ? "" : "s"}`}
-            </span>
-            <span className="rc-actions">
-              <button className="btn ok sm" onClick={() => onApprove(r)}>
-                Approve
-              </button>
-              <button className="btn ghost-danger sm" onClick={() => onDeny(r)}>
-                Deny
-              </button>
-            </span>
+
+        {comments.length > 0 && (
+          <div className="chief-thread">
+            <div className="ct-label">Chief notes</div>
+            {comments.map((c, i) => (
+              <div className="ct-item" key={i}>
+                <div className="ct-meta">
+                  <b>{c.author}</b> · {fmtWhen(c.at)}
+                </div>
+                <div className="ct-text">{c.text}</div>
+              </div>
+            ))}
           </div>
         )}
-        {r.decided_by && (
-          <div className="rc-foot">
-            <span className="rc-decided">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                <path d="M20 6 9 17l-5-5" />
-              </svg>
-              {r.status === "denied" ? "Denied" : "Approved"} by {r.decided_by}
-            </span>
-          </div>
-        )}
+
+        <div className="rc-foot">
+          {leftInfo || <span />}
+          <span className="rc-actions">
+            {decidable && (
+              <>
+                <button className="btn ok sm" onClick={() => onApprove(r)}>
+                  Approve
+                </button>
+                <button className="btn ghost-danger sm" onClick={() => onDeny(r)}>
+                  Deny
+                </button>
+              </>
+            )}
+            <button className="btn sm" onClick={() => onRevision(r)}>
+              {r.status === "needs_revision" ? "Add note" : "Request revision"}
+            </button>
+            <button className="btn sm" onClick={() => onEdit(r)}>
+              Edit
+            </button>
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -498,6 +582,210 @@ function ApproveModal({
             }
           >
             Approve request
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ───────────────────────── Edit modal ───────────────────────── */
+function EditModal({
+  req,
+  onClose,
+  onDone,
+}: {
+  req: RequestRow;
+  onClose: () => void;
+  onDone: (body: Record<string, unknown>) => void;
+}) {
+  const [conference, setConference] = useState(req.conference);
+  const [startDate, setStartDate] = useState(req.start_date);
+  const [endDate, setEndDate] = useState(req.end_date);
+  const [rotation, setRotation] = useState(req.rotation || "");
+  const [note, setNote] = useState(req.note || "");
+  const [pres, setPres] = useState<string[]>(req.presentation_dates.length ? req.presentation_dates : []);
+  const [vocab, setVocab] = useState<string[]>([]);
+  const [confs, setConfs] = useState<string[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/meta")
+      .then((r) => r.json())
+      .then((m) => {
+        setVocab(m.vocab || []);
+        setConfs(m.conferences || []);
+      })
+      .catch(() => {});
+  }, []);
+
+  async function save() {
+    if (!conference.trim()) return setErr("Conference can't be blank.");
+    if (!startDate || !endDate) return setErr("Both dates are required.");
+    if (endDate < startDate) return setErr("End date is before start date.");
+    setBusy(true);
+    await onDone({
+      action: "edit",
+      conference: conference.trim(),
+      start_date: startDate,
+      end_date: endDate,
+      rotation: rotation || null,
+      presentation_dates: pres.filter(Boolean).sort(),
+      note: note.trim(),
+    });
+  }
+
+  return (
+    <div className="modal-bg show" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 480 }}>
+        <h3>Edit request</h3>
+        <p className="sub">
+          <b>{req.resident_name}</b> · editing keeps this request in its current status
+          {req.status === "needs_revision" ? " (still awaiting the resident)" : ""}.
+        </p>
+        <div className="field">
+          <label>Conference</label>
+          <input list="edit-conflist" value={conference} onChange={(e) => setConference(e.target.value)} />
+          <datalist id="edit-conflist">
+            {confs.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
+        </div>
+        <div className="field2">
+          <div className="field">
+            <label>Departure</label>
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Return</label>
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+          </div>
+        </div>
+        <div className="field">
+          <label>Rotation</label>
+          <select value={rotation} onChange={(e) => setRotation(e.target.value)}>
+            <option value="">— none —</option>
+            {vocab.map((l) => (
+              <option key={l} value={l}>
+                {l}
+                {isCoreLabel(l) ? " (core)" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>Presentation date(s)</label>
+          {pres.map((d, i) => (
+            <div className="presrow" key={i}>
+              <input
+                type="date"
+                value={d}
+                onChange={(e) => {
+                  const v = [...pres];
+                  v[i] = e.target.value;
+                  setPres(v);
+                }}
+              />
+              <button type="button" className="rm" onClick={() => setPres(pres.filter((_, j) => j !== i))}>
+                ✕
+              </button>
+            </div>
+          ))}
+          <button type="button" className="btn sm" onClick={() => setPres([...pres, ""])}>
+            + Add a date
+          </button>
+        </div>
+        <div className="field">
+          <label>Resident note</label>
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} />
+        </div>
+        {err && <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 8 }}>{err}</div>}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={save} disabled={busy}>
+            {busy ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ───────────────────────── Revision / comment modal ───────────────────────── */
+function RevisionModal({
+  req,
+  onClose,
+  onDone,
+}: {
+  req: RequestRow;
+  onClose: () => void;
+  onDone: (body: Record<string, unknown>) => void;
+}) {
+  const addingNote = req.status === "needs_revision";
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    if (!comment.trim()) return setErr("Please add a note first.");
+    setBusy(true);
+    await onDone({ action: addingNote ? "comment" : "needs_revision", comment: comment.trim() });
+  }
+
+  return (
+    <div className="modal-bg show" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 460 }}>
+        <h3>{addingNote ? "Add a chief note" : "Send back for revision"}</h3>
+        <p className="sub">
+          {addingNote ? (
+            <>
+              <b>{req.resident_name}</b>&rsquo;s request is already flagged for revision. Add a note for the
+              other chiefs.
+            </>
+          ) : (
+            <>
+              This flags <b>{req.resident_name}</b>&rsquo;s request as <b>Needs revision</b>. Leave a note so the
+              other chiefs know why — the resident can then update and resubmit it.
+            </>
+          )}
+        </p>
+        {req.chief_comments?.length > 0 && (
+          <div className="chief-thread" style={{ marginBottom: 14 }}>
+            <div className="ct-label">Earlier notes</div>
+            {req.chief_comments.map((c, i) => (
+              <div className="ct-item" key={i}>
+                <div className="ct-meta">
+                  <b>{c.author}</b> · {fmtWhen(c.at)}
+                </div>
+                <div className="ct-text">{c.text}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="field">
+          <label>{addingNote ? "Note" : "Reason revision is needed"}</label>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder={
+              addingNote
+                ? "e.g. Following up — still waiting on the presentation date."
+                : "e.g. Please confirm your exact presentation date and double-check the return date."
+            }
+            autoFocus
+          />
+        </div>
+        {err && <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 8 }}>{err}</div>}
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={submit} disabled={busy}>
+            {busy ? "Saving…" : addingNote ? "Add note" : "Send back for revision"}
           </button>
         </div>
       </div>
